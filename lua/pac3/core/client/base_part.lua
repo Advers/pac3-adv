@@ -31,6 +31,7 @@ BUILDER
 	:StartStorableVars()
 		:SetPropertyGroup("generic")
 			:GetSet("Name", "")
+			:GetSet("Notes", "")
 			:GetSet("Hide", false)
 			:GetSet("EditorExpand", false, {hidden = true})
 			:GetSet("UniqueID", "", {hidden = true})
@@ -53,6 +54,7 @@ function PART:IsValid()
 end
 
 function PART:PreInitialize()
+	if pace == nil then pace = _G.pace end --I found that it is localized before pace was created
 	self.Children = {}
 	self.ChildrenMap = {}
 	self.modifiers = {}
@@ -61,6 +63,8 @@ function PART:PreInitialize()
 	self.hide_disturbing = false
 	self.active_events = {}
 	self.active_events_ref_count = 0
+	local cvarName = "pac_enable_" .. string.Replace(self.ClassName, " ", "_"):lower()
+	if not GetConVar(cvarName):GetBool() then self:SetWarning("This part class is disabled! Enable it with " .. cvarName .. " 1") end
 end
 
 function PART:Initialize() end
@@ -219,8 +223,10 @@ do -- owner
 				end
 			end
 
-			local owner = parent:GetOwner()
-			if owner:IsValid() then return owner end
+			if parent ~= self then
+				local owner = parent:GetOwner()
+				if owner:IsValid() then return owner end
+			end
 		end
 
 		return NULL
@@ -559,6 +565,35 @@ do -- scene graph
 		end
 	end
 
+	function PART:SetSmallIcon(str)
+		if str == "event" then str = "icon16/clock_red.png" end
+		if self.pace_tree_node then
+			if self.pace_tree_node.Icon then
+				if not self.pace_tree_node.Icon.event_icon then
+					local pnl = vgui.Create("DImage", self.pace_tree_node.Icon)
+					self.pace_tree_node.Icon.event_icon_alt = true
+					self.pace_tree_node.Icon.event_icon = pnl
+					pnl:SetSize(8*(1 + 0.5*(GetConVar("pac_editor_scale"):GetFloat()-1)), 8*(1 + 0.5*(GetConVar("pac_editor_scale"):GetFloat()-1)))
+					pnl:SetPos(8*(1 + 0.5*(GetConVar("pac_editor_scale"):GetFloat()-1)), 8*(1 + 0.5*(GetConVar("pac_editor_scale"):GetFloat()-1)))
+				end
+				self.pace_tree_node.Icon.event_icon_alt = true
+				self.pace_tree_node.Icon.event_icon:SetImage(str)
+				self.pace_tree_node.Icon.event_icon:SetVisible(true)
+			end
+		end
+	end
+	function PART:RemoveSmallIcon()
+		if self.pace_tree_node then
+			if self.pace_tree_node.Icon then
+				if self.pace_tree_node.Icon.event_icon then
+					self.pace_tree_node.Icon.event_icon_alt = false
+					self.pace_tree_node.Icon.event_icon:SetImage("icon16/clock_red.png")
+					self.pace_tree_node.Icon.event_icon:SetVisible(false)
+				end
+			end
+		end
+	end
+
 end
 
 do -- hidden / events
@@ -693,7 +728,46 @@ do -- hidden / events
 			return "pac_hide_disturbing is set to 1"
 		end
 
+		for i,part in ipairs(self:GetParentList()) do
+			if part:IsHidden() then
+				table_insert(found, tostring(part) .. " is parent hiding")
+			end
+		end
+		if found[1] then
+			return table.concat(found, "\n")
+		end
+
 		return ""
+	end
+
+	function PART:GetReasonsHidden()
+		local found = {}
+
+		for part in pairs(self.active_events) do
+			found[part] = "event hiding"
+		end
+
+		if self.Hide then
+			found[self] = "self hiding"
+		end
+
+		if self.hide_disturbing then
+			if self.Hide then
+				found[self] = "self hiding and disturbing"
+			else
+				found[self] = "disturbing"
+			end
+		end
+
+		for i,part in ipairs(self:GetParentList()) do
+			if not found[part] then
+				if part:IsHidden() then
+					found[part] = "parent hidden"
+				end
+			end
+		end
+
+		return found
 	end
 
 	function PART:CalcShowHide(from_rendering)
@@ -1145,6 +1219,98 @@ do
 
 	function PART:OnThink() end
 	function PART:AlwaysOnThink() end
+end
+
+--the popup system
+function PART:SetupEditorPopup(str, force_open, tbl)
+	if pace.Editor == nil then return end
+	if self.pace_tree_node == nil then return end
+	local legacy_help_popup_hack = false
+	if not tbl then
+		legacy_help_popup_hack = false
+	elseif tbl.from_legacy then
+		legacy_help_popup_hack = true
+	end
+	if not IsValid(self) then return end
+
+	local popup_config_table = tbl or {
+		pac_part = self, obj_type = GetConVar("pac_popups_preferred_location"):GetString(),
+		hoverfunc = function() end,
+		doclickfunc = function() end,
+		panel_exp_width = 900, panel_exp_height = 400
+	}
+
+	local default_state = str == nil or str == ""
+	local info_string
+	if self.ClassName == "event" and default_state then
+		info_string = self:GetEventTutorialText()
+	end
+	info_string = info_string or str or self.ClassName .. "\nno special information available"
+
+	if default_state and pace then
+		local partsize_tbl = pace.GetPartSizeInformation(self)
+		info_string = info_string .. "\n" .. partsize_tbl.info .. ", " .. partsize_tbl.all_share_percent .. "% of all parts"
+	end
+
+	if self.Notes and self.Notes ~= "" then
+		info_string = info_string .. "\n\nNotes:\n\n" .. self.Notes
+	end
+
+	local tree_node = self.pace_tree_node
+	local part = self
+	self.killpopup = false
+	local pnl
+
+	--local pace = pace or {}
+	if tree_node then
+		tree_node.Label:SetTooltip(self.ClassName)
+		local part = self
+
+		function tree_node:Think()
+			--if not part.killpopup and ((self.Label:IsHovered() and GetConVar("pac_popups_preferred_location"):GetString() == "pac tree label") or input.IsButtonDown(KEY_F1) or force_open) then
+			if not part.killpopup and ((self.Label:IsHovered() and GetConVar("pac_popups_preferred_location"):GetString() == "pac tree label") or force_open) then
+				if not self.popuppnl_is_up and not IsValid(self.popupinfopnl) and not part.killpopup and not legacy_help_popup_hack then
+					self.popupinfopnl = pac.InfoPopup(
+						info_string,
+						popup_config_table
+					)
+					self.popuppnl_is_up = true
+				end
+
+				--if IsValid(self.popupinfopnl) then self.popupinfopnl:MakePopup() end
+				pnl = self.popupinfopnl
+
+			end
+			if not IsValid(self.popupinfopnl) then self.popupinfopnl = nil self.popuppnl_is_up = false end
+		end
+		tree_node:Think()
+	end
+	if not pnl then
+		pnl = pac.InfoPopup(info_string,popup_config_table)
+		self.pace_tree_node.popupinfopnl = pnl
+	end
+	if pace then
+		pace.legacy_floating_popup_reserved = pnl
+	end
+
+	return pnl
+end
+
+function PART:AttachEditorPopup(str, flash, tbl)
+	local pnl = self:SetupEditorPopup(str, flash, tbl)
+	if flash and pnl then
+		pnl:MakePopup()
+	end
+end
+
+function PART:DetachEditorPopup()
+	local tree_node = self.pace_tree_node
+	if tree_node then
+		if tree_node.popupinfopnl then
+			tree_node.popupinfopnl:Remove()
+		end
+		if not IsValid(tree_node.popupinfopnl) then tree_node.popupinfopnl = nil end
+	end
 end
 
 BUILDER:Register()

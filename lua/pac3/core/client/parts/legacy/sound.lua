@@ -9,17 +9,27 @@ PART.Group = 'effects'
 PART.Icon = 'icon16/sound.png'
 
 BUILDER:StartStorableVars()
+BUILDER:SetPropertyGroup("generic")
 	BUILDER:GetSet("Sound", "")
 	BUILDER:GetSet("Volume", 1, {editor_sensitivity = 0.25})
 	BUILDER:GetSet("Pitch", 0.4, {editor_sensitivity = 0.125})
 	BUILDER:GetSet("MinPitch", 100, {editor_sensitivity = 0.125})
 	BUILDER:GetSet("MaxPitch", 100, {editor_sensitivity = 0.125})
 	BUILDER:GetSet("RootOwner", true)
+	BUILDER:GetSet("SoundLevel", 100)
+	BUILDER:GetSet("LocalPlayerOnly", false)
+BUILDER:SetPropertyGroup("playback")
 	BUILDER:GetSet("PlayOnFootstep", false)
 	BUILDER:GetSet("Overlapping", false)
-	BUILDER:GetSet("SoundLevel", 100)
 	BUILDER:GetSet("Loop", false)
-	BUILDER:GetSet("LocalPlayerOnly", false)
+	BUILDER:GetSet("Sequential", false, {description = "if there are multiple sounds (separated by ; or using [min,max] notation), plays these sounds in sequential order instead of randomly"})
+	BUILDER:GetSet("SequentialStep",1,
+		{editor_onchange =
+		function(self, num)
+			self.sens = 0.25
+			num = tonumber(num)
+			return math.Round(num)
+		end})
 BUILDER:EndStorableVars()
 
 function PART:GetNiceName()
@@ -32,6 +42,9 @@ function PART:Initialize()
 end
 
 function PART:OnShow(from_rendering)
+	local pos = self:GetWorldPosition()
+	if pos:DistToSqr(pac.EyePos) > pac.sounds_draw_dist_sqr then return end
+
 	if not from_rendering then
 		self.played_overlapping = false
 		self:PlaySound()
@@ -70,10 +83,31 @@ function PART:OnHide()
 	end
 end
 
+--this is not really stopping the sound, rather putting the volume very low so the sounds don't replay when going back in range
+function PART:Silence(b)
+	if not self.csptch then return end
+	if not self.csptch:IsPlaying() then return end
+
+	if b then
+		self.csptch:ChangeVolume(0.01, 0)
+	else
+		self.csptch:ChangeVolume(math.Clamp(self.Volume * pac.volume, 0.001, 1), 0)
+	end
+end
+
 function PART:OnThink()
+	local pos = self:GetWorldPosition()
+	if pos:DistToSqr(pac.EyePos) > pac.sounds_draw_dist_sqr then
+		self.out_of_range = true
+		self:Silence(true)
+	else
+		if self.out_of_range then self:Silence(false) end
+		self.out_of_range = false
+	end
 	if not self.csptch then
 		self:PlaySound()
-	else
+	end
+	if self.csptch then
 		if self.Loop then
 			pac.playing_sound = true
 			if not self.csptch:IsPlaying() then self.csptch:Play() end
@@ -138,7 +172,7 @@ function PART:SetVolume(num)
 	end
 
 	if self.csptch then
-		self.csptch:ChangeVolume(math.Clamp(self.Volume, 0.001, 1), 0)
+		self.csptch:ChangeVolume(math.Clamp(self.Volume * pac.volume, 0.001, 1), 0)
 	end
 end
 
@@ -171,19 +205,58 @@ function PART:PlaySound(osnd, ovol)
 		else
 			local sounds = self.Sound:Split(";")
 
+			--case 1: proper semicolon list
 			if #sounds > 1 then
-				snd = table.Random(sounds)
-			else
-				snd = self.Sound:gsub(
-					"(%[%d-,%d-%])",
-					function(minmax)
+				if self.Sequential then
+					self.seq_index = self.seq_index or 1
+
+					snd = sounds[self.seq_index]
+
+					self.seq_index = self.seq_index + self.SequentialStep
+					self.seq_index = self.seq_index % (#sounds+1)
+					if self.seq_index == 0 then self.seq_index = 1 end
+				else snd = table.Random(sounds) end
+
+			--case 2: one sound, which may or may not be bracket notation
+			elseif #sounds == 1 then
+				--bracket notation
+				if string.match(sounds[1],"%[(%d-),(%d-)%]") then
+					local function minmaxpath(minmax,str)
 						local min, max = minmax:match("%[(%d-),(%d-)%]")
+						if minmax:match("%[(%d-),(%d-)%]") == nil then return 1 end
 						if max < min then
 							max = min
 						end
-						return math.random(min, max)
+						if str == "min" then return tonumber(min)
+						elseif str == "max" then return tonumber(max) else return tonumber(max) end
 					end
-				)
+					if self.Sequential then
+						self.seq_index = self.seq_index or minmaxpath(self.Sound,"min")
+						snd = self.Sound:gsub(
+							"(%[%d-,%d-%])",self.seq_index
+						)
+						self.seq_index = self.seq_index + self.SequentialStep
+
+						local span = minmaxpath(self.Sound,"max") - minmaxpath(self.Sound,"min") + 1
+						if self.seq_index > minmaxpath(self.Sound,"max") then
+							self.seq_index = self.seq_index - span
+						elseif self.seq_index < minmaxpath(self.Sound,"min") then
+							self.seq_index = self.seq_index + span
+						end
+					else
+						snd = self.Sound:gsub(
+							"(%[%d-,%d-%])",
+							function(minmax)
+								local min, max = minmax:match("%[(%d-),(%d-)%]")
+								if max < min then
+									max = min
+								end
+								return math.random(min, max)
+							end
+						)
+					end
+				--single sound
+				else snd = sounds[1] or osnd end
 			end
 		end
 
@@ -194,6 +267,8 @@ function PART:PlaySound(osnd, ovol)
 		else
 			vol = self.Volume
 		end
+
+		vol = vol * pac.volume
 
 		local pitch
 
@@ -228,9 +303,29 @@ function PART:PlaySound(osnd, ovol)
 	end
 end
 
-function PART:StopSound()
+function PART:StopSound(force_stop)
 	if self.csptch then
 		self.csptch:Stop()
+	end
+	if force_stop and self.Overlapping then
+		local ent = self.RootOwner and self:GetRootPart():GetOwner() or self:GetOwner()
+		if IsValid(ent) then
+			local sounds = self.Sound:Split(";")
+			if string.match(sounds[1],"%[(%d-),(%d-)%]") then
+				local min, max = string.match(sounds[1],"%[(%d-),(%d-)%]")
+				if max < min then
+					max = min
+				end
+				for i=min, max, 1 do
+					snd = self.Sound:gsub("(%[%d-,%d-%])", i)
+					ent:StopSound(snd)
+				end
+			else
+				for i,snd in ipairs(sounds) do
+					ent:StopSound(snd)
+				end
+			end
+		end
 	end
 end
 

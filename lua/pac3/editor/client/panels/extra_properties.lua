@@ -188,7 +188,7 @@ do -- part
 			if not self:IsValid() then return end
 			self:SetValue(part:GetUniqueID())
 			self.OnValueChanged(part)
-		end)
+		end, self)
 	end
 
 	function PANEL:MoreOptionsRightClick(key)
@@ -211,6 +211,72 @@ do -- part
 				self:SetValue("")
 				self.OnValueChanged("")
 			end):SetImage(pace.MiscIcons.clear)
+		end
+
+		pace.FixMenu(menu)
+	end
+
+	pace.RegisterPanel(PANEL)
+end
+
+do -- custom animation frame event
+	local PANEL = {}
+
+	PANEL.ClassName = "properties_custom_animation_frame"
+	PANEL.Base = "pace_properties_part"
+
+	function PANEL:MoreOptionsLeftClick()
+		pace.CreateSearchList(
+			self,
+			self.CurrentKey,
+			L"custom animations",
+
+			function(list)
+				list:AddColumn(L"name")
+				list:AddColumn(L"id")
+			end,
+
+			function()
+				local output = {}
+				local parts = pac.GetLocalParts()
+
+				for i, part in pairs(parts) do
+
+					if part.ClassName == "custom_animation" then
+						local name = part.Name ~= "" and part.Name or "no name"
+						output[i] = name
+					end
+				end
+
+				return output
+			end,
+
+			function() return pace.current_part:GetProperty("animation") end,
+
+			function(list, key, val)
+				return list:AddLine(val, key)
+			end,
+
+			function(key, val) return val end,
+
+			function(key, val) return key end
+		)
+	end
+
+	function PANEL:MoreOptionsRightClick(key)
+		local menu = DermaMenu()
+
+		menu:MakePopup()
+
+		for _, part in pairs(pac.GetLocalParts()) do
+			if not part:HasParent() and part:GetShowInEditor() then
+				populate_part_menu(menu, part, function(part)
+					if not self:IsValid() then return end
+					if part.ClassName ~= "custom_animation" then return end
+					self:SetValue(part:GetUniqueID())
+					self.OnValueChanged(part:GetUniqueID())
+				end)
+			end
 		end
 
 		pace.FixMenu(menu)
@@ -714,9 +780,108 @@ do -- event is_touching
 			if part ~= last_part then stop() return end
 			if not part:IsValid() then stop() return end
 			if part.ClassName ~= "event" then stop() return end
-			if part:GetEvent() ~= "is_touching" then stop() return end
+			if not (part:GetEvent() == "is_touching" or part:GetEvent() == "is_touching_scalable" or part:GetEvent() == "is_touching_filter" or part:GetEvent() == "is_touching_life") then stop() return end
 
 			local extra_radius = part:GetProperty("extra_radius") or 0
+			local nearest_model = part:GetProperty("nearest_model") or false
+			local no_npc = part:GetProperty("no_npc") or false
+			local no_players = part:GetProperty("no_players") or false
+			local x_stretch = part:GetProperty("x_stretch") or 1
+			local y_stretch = part:GetProperty("y_stretch") or 1
+			local z_stretch = part:GetProperty("z_stretch") or 1
+
+			local ent
+			if part.RootOwner then
+				ent = part:GetRootPart():GetOwner()
+			else
+				ent = part:GetOwner()
+			end
+
+			if nearest_model then ent = part:GetOwner() end
+
+			if not IsValid(ent) then stop() return end
+			local radius
+
+			if radius == 0 and IsValid(ent.pac_projectile) then
+				radius = ent.pac_projectile:GetRadius()
+			end
+
+			local mins = Vector(-x_stretch,-y_stretch,-z_stretch)
+			local maxs = Vector(x_stretch,y_stretch,z_stretch)
+
+			radius = math.max(ent:BoundingRadius() + extra_radius + 1, 1)
+			mins = mins * radius
+			maxs = maxs * radius
+
+			local startpos = ent:WorldSpaceCenter()
+			local b = false
+			if part:GetEvent() == "is_touching" or part:GetEvent() == "is_touching_scalable" then
+				local tr = util.TraceHull( {
+					start = startpos,
+					endpos = startpos,
+					maxs = maxs,
+					mins = mins,
+					filter = {part:GetRootPart():GetOwner(),ent}
+				} )
+				b = tr.Hit
+			elseif part:GetEvent() == "is_touching_life" then
+				local found = false
+				local ents_hits = ents.FindInBox(startpos + mins, startpos + maxs)
+				for _,ent2 in pairs(ents_hits) do
+
+					if IsValid(ent2) and (ent2 ~= ent and ent2 ~= part:GetRootPart():GetOwner()) and
+					(ent2:IsNPC() or ent2:IsPlayer())
+					then
+						found = true
+						if ent2:IsNPC() and no_npc then
+							found = false
+						elseif ent2:IsPlayer() and no_players then
+							found = false
+						end
+						if found then b = true end
+					end
+				end
+			elseif part:GetEvent() == "is_touching_filter" then
+				local ents_hits = ents.FindInBox(startpos + mins, startpos + maxs)
+				for _,ent2 in pairs(ents_hits) do
+					if (ent2 ~= ent and ent2 ~= part:GetRootPart():GetOwner()) and
+						(ent2:IsNPC() or ent2:IsPlayer()) and
+						not ( (no_npc and ent2:IsNPC()) or (no_players and ent2:IsPlayer()) )
+					then b = true end
+				end
+			end
+
+			if self.udata then
+				render.DrawWireframeBox( startpos, Angle( 0, 0, 0 ), mins, maxs, b and Color(255,0,0) or Color(255,255,255), true )
+			end
+		end)
+	end
+
+	pace.RegisterPanel(PANEL)
+end
+
+do -- event seen_by_player
+	local PANEL = {}
+
+	PANEL.ClassName = "properties_seen_by_player"
+	PANEL.Base = "pace_properties_number"
+
+	function PANEL:OnValueSet()
+		local function stop()
+			hook.Remove("PostDrawOpaqueRenderables", "pace_draw_is_touching2")
+		end
+		local last_part = pace.current_part
+
+		hook.Add("PostDrawOpaqueRenderables", "pace_draw_is_touching2", function()
+			local part = pace.current_part
+			if part ~= last_part then stop() return end
+			if not part:IsValid() then stop() return end
+			if part.ClassName ~= "event" then stop() return end
+			if not (part:GetEvent() == "seen_by_player") then stop() return end
+			if not pace.IsActive() then stop() return end
+
+			local extra_radius = part:GetProperty("extra_radius") or 0
+
 			local ent
 			if part.RootOwner then
 				ent = part:GetRootPart():GetOwner()
@@ -725,30 +890,102 @@ do -- event is_touching
 			end
 
 			if not IsValid(ent) then stop() return end
-			local radius = ent:BoundingRadius()
 
-			if radius == 0 and IsValid(ent.pac_projectile) then
-				radius = ent.pac_projectile:GetRadius()
+			local mins = Vector(-extra_radius,-extra_radius,-extra_radius)
+			local maxs = Vector(extra_radius,extra_radius,extra_radius)
+
+			local b = false
+			local players_see = {}
+			for _,v in ipairs(player.GetAll()) do
+				if v == ent then continue end
+				local eyetrace = v:GetEyeTrace()
+
+				local this_player_sees = false
+				if util.IntersectRayWithOBB(eyetrace.StartPos, eyetrace.HitPos - eyetrace.StartPos, LocalPlayer():GetPos() + LocalPlayer():OBBCenter(), Angle(0,0,0), Vector(-extra_radius,-extra_radius,-extra_radius), Vector(extra_radius,extra_radius,extra_radius)) then
+					b = true
+					this_player_sees = true
+				end
+				if eyetrace.Entity == ent then
+					b = true
+					this_player_sees = true
+				end
+				render.DrawLine(eyetrace.StartPos, eyetrace.HitPos, this_player_sees and Color(255, 0,0) or Color(255,255,255), true)
 			end
-
-			radius = math.max(radius + extra_radius + 1, 1)
-
-			local mins = Vector(-1,-1,-1)
-			local maxs = Vector(1,1,1)
-			local startpos = ent:WorldSpaceCenter()
-			mins = mins * radius
-			maxs = maxs * radius
-
-			local tr = util.TraceHull( {
-				start = startpos,
-				endpos = startpos,
-				maxs = maxs,
-				mins = mins,
-				filter = ent
-			} )
-			
+			::CHECKOUT::
 			if self.udata then
-				render.DrawWireframeBox( startpos, Angle( 0, 0, 0 ), mins, maxs, tr.Hit and Color(255,0,0) or Color(255,255,255), true )
+				render.DrawWireframeBox( ent:GetPos() + ent:OBBCenter(), Angle( 0, 0, 0 ), mins, maxs, b and Color(255,0,0) or Color(255,255,255), true )
+			end
+		end)
+	end
+
+	pace.RegisterPanel(PANEL)
+end
+
+do --projectile radius
+	local PANEL = {}
+
+	PANEL.ClassName = "properties_projectile_radii"
+	PANEL.Base = "pace_properties_number"
+
+	local testing_mesh
+	local drawing = false
+	local phys_mesh_vis = {}
+	function PANEL:OnValueSet()
+		time = os.clock() + 6
+		local function stop()
+			hook.Remove("PostDrawOpaqueRenderables", "pace_draw_projectile_radii")
+			timer.Simple(0.2, function() SafeRemoveEntity(testing_mesh) end) drawing = false
+		end
+		local last_part = pace.current_part
+
+		hook.Add("PostDrawOpaqueRenderables", "pace_draw_projectile_radii", function()
+			drawing = true
+			if time < os.clock() then
+				stop()
+			end
+			if not pace.current_part:IsValid() then stop() return end
+			if pace.current_part.ClassName ~= "projectile" then stop() return end
+			if self.udata then
+				if last_part.Sphere then
+					render.DrawWireframeSphere( last_part:GetWorldPosition(), last_part.Radius, 10, 10, Color(255,255,255), true )
+					render.DrawWireframeSphere( last_part:GetWorldPosition(), last_part.DamageRadius, 10, 10, Color(255,0,0), true )
+				else
+					local mins_ph = Vector(last_part.Radius,last_part.Radius,last_part.Radius)
+					local mins_dm = Vector(last_part.DamageRadius,last_part.DamageRadius,last_part.DamageRadius)
+					if last_part.OverridePhysMesh then
+						if not IsValid(testing_mesh) then testing_mesh = ents.CreateClientProp("models/props_junk/PopCan01a.mdl") end
+						testing_mesh:PhysicsInit(SOLID_VPHYSICS)
+						if testing_mesh:GetModel() ~= last_part.FallbackSurfpropModel then
+							testing_mesh:SetModel(last_part.FallbackSurfpropModel)
+							testing_mesh:PhysicsInit(SOLID_VPHYSICS)
+							phys_mesh_vis = {}
+							for i = 0, testing_mesh:GetPhysicsObjectCount() - 1 do
+								for i2,tri in ipairs(testing_mesh:GetPhysicsObjectNum( i ):GetMeshConvexes()) do
+									for i3,vert in ipairs(tri) do
+										table.insert(phys_mesh_vis, vert)
+									end
+								end
+							end
+						end
+						local obj = Mesh()
+						obj:BuildFromTriangles(phys_mesh_vis)
+						cam.Start3D(pac.EyePos, pac.EyeAng)
+							render.SetMaterial(Material("models/wireframe"))
+								local mat = Matrix()
+								mat:Translate(last_part:GetWorldPosition())
+								mat:Rotate(last_part:GetWorldAngles())
+								mat:Scale(Vector(last_part.Radius,last_part.Radius,last_part.Radius))
+								cam.PushModelMatrix( mat )
+								render.CullMode(MATERIAL_CULLMODE_CW)obj:Draw()
+								render.CullMode(MATERIAL_CULLMODE_CCW)obj:Draw()
+							cam.PopModelMatrix()
+						cam.End3D()
+					else
+						render.DrawWireframeBox( last_part:GetWorldPosition(), last_part:GetWorldAngles(), -mins_ph, mins_ph, Color(255,255,255), true )
+					end
+					render.DrawWireframeBox( last_part:GetWorldPosition(), last_part:GetWorldAngles(), -mins_dm, mins_dm, Color(255,0,0), true )
+				end
+
 			end
 		end)
 	end

@@ -41,6 +41,7 @@ function PART:SetDrawShadow(b)
 	local ent = self:GetOwner()
 	if not ent:IsValid() then return end
 
+	pac.emut.MutateEntity(self:GetPlayerOwner(), "draw_shadow", ent, b)
 	ent:DrawShadow(b)
 	ent:MarkShadowAsDirty()
 end
@@ -168,11 +169,11 @@ function PART:OnShow()
 		end
 	end
 
-	if not self.real_model then 
-		self.real_model = ent:GetModel() 
+	if not self.real_model then
+		self.real_model = ent:GetModel()
 	end
 
-	if not (self.old_model == self:GetModel()) or 
+	if not (self.old_model == self:GetModel()) or
 	(pac.LocalHands:IsValid() and ent == pac.LocalHands
 	and not (self.real_model == pac.LocalHands:GetModel())) then
 		self.old_model = self:GetModel()
@@ -211,6 +212,7 @@ function PART:OnRemove()
 	local player_owner = self:GetPlayerOwner()
 
 	pac.emut.RestoreMutations(player_owner, "model", ent)
+	pac.emut.RestoreMutations(player_owner, "draw_shadow", ent)
 
 	if ent:IsPlayer() or ent:IsNPC() then
 		pac.emut.RestoreMutations(player_owner, "size", ent)

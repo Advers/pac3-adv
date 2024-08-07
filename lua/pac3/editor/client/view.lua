@@ -12,6 +12,26 @@ acsfnc("Pos", Vector(5,5,5))
 acsfnc("Angles", Angle(0,0,0))
 acsfnc("FOV", 75)
 
+pace.camera_forward_bind = CreateClientConVar("pac_editor_camera_forward_bind", "w", true)
+pace.camera_back_bind = CreateClientConVar("pac_editor_camera_back_bind", "s", true)
+pace.camera_moveleft_bind = CreateClientConVar("pac_editor_camera_moveleft_bind", "a", true)
+pace.camera_moveright_bind = CreateClientConVar("pac_editor_camera_moveright_bind", "d", true)
+pace.camera_up_bind = CreateClientConVar("pac_editor_camera_up_bind", "space", true)
+pace.camera_down_bind = CreateClientConVar("pac_editor_camera_down_bind", "", true)
+pace.camera_slow_bind = CreateClientConVar("pac_editor_camera_slow_bind", "ctrl", true)
+pace.camera_speed_bind = CreateClientConVar("pac_editor_camera_speed_bind", "shift", true)
+
+pace.camera_movement_binds = {
+	["forward"] = pace.camera_forward_bind,
+	["back"] = pace.camera_back_bind,
+	["moveleft"] = pace.camera_moveleft_bind,
+	["moveright"] = pace.camera_moveright_bind,
+	["up"] = pace.camera_up_bind,
+	["down"] = pace.camera_down_bind,
+	["slow"] = pace.camera_slow_bind,
+	["speed"] = pace.camera_speed_bind
+}
+
 function pace.GetViewEntity()
 	return pace.ViewEntity:IsValid() and pace.ViewEntity or pac.LocalPlayer
 end
@@ -119,17 +139,6 @@ function pace.GUIMouseReleased(mc)
 	if pace.editing_viewmodel or pace.editing_hands then return end
 
 	mcode = nil
-	if not GetConVar("pac_enable_editor_view"):GetBool() then pace.EnableView(true)
-	else
-		pac.RemoveHook("CalcView", "camera_part")
-		pac.AddHook("GUIMousePressed", "editor", pace.GUIMousePressed)
-		pac.AddHook("GUIMouseReleased", "editor", pace.GUIMouseReleased)
-		pac.AddHook("ShouldDrawLocalPlayer", "editor", pace.ShouldDrawLocalPlayer, DLib and -4 or ULib and -1 or nil)
-		pac.AddHook("CalcView", "editor", pace.CalcView, DLib and -4 or ULib and -1 or nil)
-		pac.AddHook("HUDPaint", "editor", pace.HUDPaint)
-		pac.AddHook("HUDShouldDraw", "editor", pace.HUDShouldDraw)
-		pac.AddHook("PostRenderVGUI", "editor", pace.PostRenderVGUI)
-	end
 end
 
 local function set_mouse_pos(x, y)
@@ -141,7 +150,12 @@ end
 
 local WORLD_ORIGIN = Vector(0, 0, 0)
 
+local function MovementBindDown(name)
+	return input.IsButtonDown(input.GetKeyCode(pace.camera_movement_binds[name]:GetString()))
+end
+
 local function CalcDrag()
+	if not pace.properties or not pace.properties.search then return end
 
 	if
 		pace.BusyWithProperties:IsValid() or
@@ -161,7 +175,7 @@ local function CalcDrag()
 	local ftime = FrameTime() * 50
 	local mult = 5
 
-	if input.IsKeyDown(KEY_LCONTROL) or input.IsKeyDown(KEY_RCONTROL) then
+	if MovementBindDown("slow") then
 		mult = 0.1
 	end
 
@@ -197,7 +211,7 @@ local function CalcDrag()
 
 	mult = mult * math.min(origin:Distance(pace.ViewPos) / 200, 3)
 
-	if input.IsKeyDown(KEY_LSHIFT) then
+	if MovementBindDown("speed") then
 		mult = mult + 5
 	end
 
@@ -223,33 +237,43 @@ local function CalcDrag()
 		end
 	end
 
-	if input.IsKeyDown(KEY_W) then
-		pace.ViewPos = pace.ViewPos + pace.ViewAngles:Forward() * mult * ftime
-	elseif input.IsKeyDown(KEY_S) then
-		pace.ViewPos = pace.ViewPos - pace.ViewAngles:Forward() * mult * ftime
-	end
 
-	if input.IsKeyDown(KEY_D) then
-		pace.ViewPos = pace.ViewPos + pace.ViewAngles:Right() * mult * ftime
-	elseif input.IsKeyDown(KEY_A) then
-		pace.ViewPos = pace.ViewPos - pace.ViewAngles:Right() * mult * ftime
-	end
+	if pace.delaymovement < RealTime() then
+		if MovementBindDown("forward") then
+			pace.ViewPos = pace.ViewPos + pace.ViewAngles:Forward() * mult * ftime
+		elseif  MovementBindDown("back") then
+			pace.ViewPos = pace.ViewPos - pace.ViewAngles:Forward() * mult * ftime
+		end
 
-	if input.IsKeyDown(KEY_SPACE) then
-		if not IsValid(pace.timeline.frame) then
-			pace.ViewPos = pace.ViewPos + pace.ViewAngles:Up() * mult * ftime
+		if  MovementBindDown("moveright") then
+			pace.ViewPos = pace.ViewPos + pace.ViewAngles:Right() * mult * ftime
+		elseif  MovementBindDown("moveleft") then
+			pace.ViewPos = pace.ViewPos - pace.ViewAngles:Right() * mult * ftime
+		end
+
+		if  MovementBindDown("up") then
+			if not IsValid(pace.timeline.frame) then
+				pace.ViewPos = pace.ViewPos + pace.ViewAngles:Up() * mult * ftime
+			end
+		elseif  MovementBindDown("down") then
+			if not IsValid(pace.timeline.frame) then
+				pace.ViewPos = pace.ViewPos - pace.ViewAngles:Up() * mult * ftime
+			end
 		end
 	end
-
-	--[[if input.IsKeyDown(KEY_LALT) then
-		pace.ViewPos = pace.ViewPos + pace.ViewAngles:Up() * -mult * ftime
-	end]]
-
 
 end
 
 local follow_entity = CreateClientConVar("pac_camera_follow_entity", "0", true)
 local enable_editor_view = CreateClientConVar("pac_enable_editor_view", "1", true)
+cvars.AddChangeCallback("pac_enable_editor_view", function(name, old, new)
+	if new == "1" then
+		pace.EnableView(true)
+	else
+		pace.CameraPartSwapView()
+	end
+end, "pace_update_editor_view")
+
 local lastEntityPos
 
 function pace.CalcView(ply, pos, ang, fov)
@@ -342,8 +366,14 @@ function pace.EnableView(b)
 		pac.AddHook("GUIMousePressed", "editor", pace.GUIMousePressed)
 		pac.AddHook("GUIMouseReleased", "editor", pace.GUIMouseReleased)
 		pac.AddHook("ShouldDrawLocalPlayer", "editor", pace.ShouldDrawLocalPlayer, DLib and -4 or ULib and -1 or nil)
-		pac.AddHook("CalcView", "editor", pace.CalcView, DLib and -4 or ULib and -1 or nil)
-		pac.RemoveHook("CalcView", "camera_part")
+		if enable_editor_view:GetBool() then
+			pac.AddHook("CalcView", "editor", pace.CalcView, DLib and -4 or ULib and -1 or nil)
+			pac.RemoveHook("CalcView", "camera_part")
+			pac.active_camera = nil
+		else
+			if pac.HasRemainingCameraPart() then pace.CameraPartSwapView() end
+			pac.RemoveHook("CalcView", "editor")
+		end
 		pac.AddHook("HUDPaint", "editor", pace.HUDPaint)
 		pac.AddHook("HUDShouldDraw", "editor", pace.HUDShouldDraw)
 		pac.AddHook("PostRenderVGUI", "editor", pace.PostRenderVGUI)
@@ -355,36 +385,69 @@ function pace.EnableView(b)
 		pac.RemoveHook("GUIMouseReleased", "editor")
 		pac.RemoveHook("ShouldDrawLocalPlayer", "editor")
 		pac.RemoveHook("CalcView", "editor")
-		pac.RemoveHook("CalcView", "camera_part")
+		pac.AddHook("CalcView", "camera_part", pac.HandleCameraPart)
 		pac.RemoveHook("HUDPaint", "editor")
 		pac.RemoveHook("HUDShouldDraw", "editor")
 		pac.RemoveHook("PostRenderVGUI", "editor")
 		pace.SetTPose(false)
 	end
+end
 
-	if not enable_editor_view:GetBool() then
-		local ply = LocalPlayer()
-		pac.RemoveHook("CalcView", "editor")
-		pac.AddHook("CalcView", "camera_part", function(ply, pos, ang, fov, nearz, farz)
-			for _, part in pairs(pac.GetLocalParts()) do
-				if part:IsValid() and part.ClassName == "camera" then
-					part:CalcShowHide()
-					local temp = {}
-					if not part:IsHidden() then
-						pos, ang, fov, nearz, farz = part:CalcView(_,_,ply:EyeAngles())
-						temp.origin = pos
-						temp.angles = ang
-						temp.fov = fov
-						temp.znear = nearz
-						temp.zfar = farz
-						temp.drawviewer = not part.DrawViewModel
-						return temp
-					end
+function pace.ManuallySelectCamera(obj, doselect)
+	if obj and doselect then
+		obj:CameraTakePriority(true)
+		pace.CameraPartSwapView(true)
+		pac.active_camera_manual = obj
+	elseif not doselect then
+		for i,v in pairs(pac.GetLocalParts()) do
+			if v.ClassName == "camera" then
+				if not v:IsHidden() and v ~= obj then
+					v:CameraTakePriority(true)
+					pace.CameraPartSwapView(true)
+					pac.active_camera_manual = v
+					return
 				end
 			end
-		end)
-		--pac.RemoveHook("ShouldDrawLocalPlayer", "editor")
+		end
+		pac.active_camera_manual = nil
+	else
+		for i,v in pairs(pac.GetLocalParts()) do
+			if v.ClassName == "camera" then
+				if not v:IsHidden() then
+					v:CameraTakePriority(true)
+					pace.CameraPartSwapView(true)
+					pac.active_camera_manual = v
+					return
+				end
+			end
+		end
 	end
+end
+
+function pace.CameraPartSwapView(force_pac_camera)
+	local pac_camera_parts_should_override = not enable_editor_view:GetBool() or not pace.Editor:IsValid() or pac.HasRemainingCameraPart()
+
+	if pace.Editor:IsValid() and enable_editor_view:GetBool() and not force_pac_camera then pac_camera_parts_should_override = false end
+
+	if pac.HandleCameraPart() == nil then --no cameras
+		if not pace.ShouldDrawLocalPlayer() then
+			pace.EnableView(false)
+		end
+		pac.RemoveHook("CalcView", "camera_part")
+	elseif pac_camera_parts_should_override then --cameras
+		pac.AddHook("CalcView", "camera_part", pac.HandleCameraPart)
+		pac.RemoveHook("CalcView", "editor")
+	else
+		pace.EnableView(enable_editor_view:GetBool())
+		--[[if not GetConVar("pac_copilot_force_preview_cameras"):GetBool() then
+			
+		else
+			pace.EnableView(false)
+		end]]
+	end
+
+
+	return pac.active_camera
 end
 
 local function CalcAnimationFix(ent)
@@ -579,4 +642,53 @@ function pace.ResetEyeAngles()
 
 		pac.SetupBones(ent)
 	end
+end
+
+function pace.PopupMiniFOVSlider()
+	zoom_persistent = GetConVar("pac_zoom_persistent")
+	zoom_smooth = GetConVar("pac_zoom_smooth")
+	local zoomframe = vgui.Create( "DPanel" )
+	local x,y = input.GetCursorPos()
+	zoomframe:SetPos(x - 90,y - 10)
+	zoomframe:SetSize( 180, 20 )
+
+	zoomframe.zoomslider = vgui.Create("DNumSlider", zoomframe)
+	zoomframe.zoomslider:DockPadding(4,0,0,0)
+	zoomframe.zoomslider:SetSize(200, 20)
+	zoomframe.zoomslider:SetMin( 0 )
+	zoomframe.zoomslider:SetMax( 100 )
+	zoomframe.zoomslider:SetDecimals( 0 )
+	zoomframe.zoomslider:SetText("Camera FOV")
+	zoomframe.zoomslider:SetDark(true)
+	zoomframe.zoomslider:SetDefaultValue( 75 )
+
+	zoomframe.zoomslider:SetValue( pace.ViewFOV )
+
+	function zoomframe:Think(...)
+		pace.ViewFOV = zoomframe.zoomslider:GetValue()
+		if zoom_smooth:GetInt() == 1 then
+			pace.SetZoom(zoomframe.zoomslider:GetValue(),true)
+		else
+			pace.SetZoom(zoomframe.zoomslider:GetValue(),false)
+		end
+	end
+
+	local hook_id = "pac_tools_menu"..util.SHA256(tostring(zoomframe))
+
+	pac.AddHook("VGUIMousePressed", hook_id, function(pnl, code)
+		pace.OverridingFOVSlider = true --to link the values with the original panel in the pac editor panel
+		if not IsValid(zoomframe) then
+			pac.RemoveHook("VGUIMousePressed", hook_id)
+			return
+		end
+		if code == MOUSE_LEFT or code == MOUSE_RIGHT then
+			if not zoomframe:IsOurChild(pnl) then
+				if zoomframe.zoomslider then zoomframe.zoomslider:Remove() end
+				zoomframe:Remove()
+				pac.RemoveHook("VGUIMousePressed", hook_id)
+				pace.OverridingFOVSlider = false
+			end
+		end
+	end)
+
 end

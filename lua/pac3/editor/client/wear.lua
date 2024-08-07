@@ -46,7 +46,20 @@ function pace.ClearParts()
 	end)
 end
 
-
+--wearing tracker counter
+pace.still_loading_wearing_count = 0
+--reusable function
+function pace.ExtendWearTracker(duration)
+	if not duration or not isnumber(duration) then duration = 1 end
+	pace.still_loading_wearing = true
+	pace.still_loading_wearing_count = pace.still_loading_wearing_count + 1 --this group is added to the tracked wear count
+	timer.Simple(duration, function()
+		pace.still_loading_wearing_count = pace.still_loading_wearing_count - 1 --assume max 8 seconds to wear
+		if pace.still_loading_wearing_count == 0 then --if this is the last group to wear, we're done
+			pace.still_loading_wearing = false
+		end
+	end)
+end
 
 do -- to server
 	local function net_write_table(tbl)
@@ -76,6 +89,12 @@ do -- to server
 
 		local data = {part = part:ToTable()}
 
+		--hack so that camera part doesn't force-gain focus if it's not manually created, because wearing removes and re-creates parts.
+		pace.hack_camera_part_donot_treat_wear_as_creating_part = true
+		timer.Simple(2, function()
+			pace.hack_camera_part_donot_treat_wear_as_creating_part = nil
+		end)
+
 		if extra then
 			table.Merge(data, extra)
 		end
@@ -93,7 +112,9 @@ do -- to server
 		end
 
 		net.SendToServer()
-		pac.Message(('Transmitting outfit %q to server (%s)'):format(part.Name or part.ClassName or '<unknown>', string.NiceSize(bytes)))
+		pac.Message(("Transmitting outfit %q to server (%s)"):format(part.Name or part.ClassName or "<unknown>", string.NiceSize(bytes)))
+
+		pace.ExtendWearTracker(8)
 
 		return true
 	end
@@ -106,9 +127,9 @@ do -- to server
 		end
 
 		net.Start("pac_submit")
-			local ret,err = net_write_table(data)
+			local ret, err = net_write_table(data)
 			if ret == nil then
-				pace.Notify(false, "unable to transfer data to server: "..tostring(err or "too big"), name)
+				pace.Notify(false, "unable to transfer data to server: " .. tostring(err or "too big"), name)
 				return false
 			end
 		net.SendToServer()
@@ -161,11 +182,11 @@ do -- from server
 			end
 
 			if owner == pac.LocalPlayer then
-				pace.CallHook("OnWoreOutfit", part)
+				pac.CallHook("OnWoreOutfit", part)
 			end
 
-			part:CallRecursive('OnWorn')
-			part:CallRecursive('PostApplyFixes')
+			part:CallRecursive("OnWorn")
+			part:CallRecursive("PostApplyFixes")
 
 			if part.UpdateOwnerName then
 				part:UpdateOwnerName(true)
@@ -208,7 +229,7 @@ function pace.HandleReceiveData(data, doitnow)
 	elseif T ==  "string" then
 		return pace.RemovePartFromServer(data.owner, data.part, data)
 	else
-		ErrorNoHalt("PAC: Unhandled "..T..'!?\n')
+		ErrorNoHalt("PAC: Unhandled " .. T .. "!?\n")
 	end
 end
 
@@ -225,7 +246,7 @@ net.Receive("pac_submit", function()
 		local data = buffer:readTable()
 
 		if type(data.owner) ~= "Player" or not data.owner:IsValid() then
-			pac.Message("received message from server but owner is not valid!? typeof " .. type(data.owner) .. ' || ', data.owner)
+			pac.Message("received message from server but owner is not valid!? typeof " .. type(data.owner) .. " || ", data.owner)
 			return
 		end
 
@@ -240,10 +261,10 @@ end)
 function pace.Notify(allowed, reason, name)
 	name = name or "???"
 
-	 if allowed == true then
-		pac.Message(string.format('Your part %q has been applied', name))
+	if allowed == true then
+		pac.Message(string.format("Your part %q has been applied", name))
 	else
-		chat.AddText(Color(255, 255, 0), "[PAC3] ", Color(255, 0, 0), string.format('The server rejected applying your part (%q) - %s', name, reason))
+		chat.AddText(Color(255, 255, 0), "[PAC3] ", Color(255, 0, 0), string.format("The server rejected applying your part (%q) - %s", name, reason))
 	end
 end
 
@@ -253,17 +274,93 @@ end)
 
 do
 	local function LoadUpDefault()
-		if next(pac.GetLocalParts()) then
-			pac.Message("not wearing autoload outfit, already wearing something")
-		elseif pace.IsActive() then
-			pac.Message("not wearing autoload outfit, editor is open")
+		if not GetConVar("pac_prompt_for_autoload"):GetBool() then
+			--legacy behavior
+			if next(pac.GetLocalParts()) then
+				pac.Message("not wearing autoload outfit, already wearing something")
+			elseif pace.IsActive() then
+				pac.Message("not wearing autoload outfit, editor is open")
+			else
+				local autoload_file = "autoload"
+				local autoload_result = hook.Run("PAC3Autoload", autoload_file)
+
+				if autoload_result ~= false then
+					if isstring(autoload_result) then
+						autoload_file = autoload_result
+					end
+					pac.Message("Wearing " .. autoload_file .. "...")
+					pace.LoadParts(autoload_file)
+					pace.WearParts()
+				end
+			end
+
 		else
-			pac.Message("Wearing autoload...")
-			pace.LoadParts("autoload")
-			pace.WearParts()
+			--prompt
+			local backup_files, directories = file.Find( "pac3/__backup/*.txt", "DATA", "datedesc")
+			local latest_outfit = cookie.GetString( "pac_last_loaded_outfit", "" )
+			if not backup_files then
+				local pnl = Derma_Query("Do you want to load your autoload outfit?", "PAC3 autoload (pac_prompt_for_autoload)",
+					"load pac3/autoload.txt : " .. string.NiceSize(file.Size("pac3/autoload.txt", "DATA")), function()
+						pac.Message("Wearing autoload...")
+						pace.LoadParts("autoload")
+						pace.WearParts()
+					end,
+
+					"load latest outfit : pac3/" .. latest_outfit .. " " .. string.NiceSize(file.Size("pac3/" .. latest_outfit, "DATA")), function()
+
+						if latest_outfit and file.Exists("pac3/" .. latest_outfit, "DATA") then
+							pac.Message("Wearing latest outfit...")
+							pace.LoadParts(latest_outfit, true)
+							pace.WearParts()
+						end
+					end,
+
+					"cancel", function() pac.Message("Not loading autoload or backups...")  end
+				)
+				pnl.Think = function() if not pnl:HasFocus() or (input.IsMouseDown(MOUSE_LEFT) and not (pnl:IsHovered() or pnl:IsChildHovered())) then pnl:Remove() end end
+			else
+				if backup_files[1] then
+					local latest_autosave = "pac3/__backup/" .. backup_files[1]
+					local pnl = Derma_Query("Do you want to load an outfit?", "PAC3 autoload (pac_prompt_for_autoload)",
+						"load pac3/autoload.txt : " .. string.NiceSize(file.Size("pac3/autoload.txt", "DATA")), function()
+							pac.Message("Wearing autoload...")
+							pace.LoadParts("autoload")
+							pace.WearParts()
+						end,
+
+						"load latest backup : " .. latest_autosave .. " " .. string.NiceSize(file.Size(latest_autosave, "DATA")), function()
+							pac.Message("Wearing latest backup outfit...")
+							pace.LoadParts("__backup/" .. backup_files[1], true)
+							pace.WearParts()
+						end,
+
+						"load latest outfit : pac3/" .. latest_outfit .. " " .. string.NiceSize(file.Size("pac3/" .. latest_outfit, "DATA")), function()
+							if latest_outfit and file.Exists("pac3/" .. latest_outfit, "DATA") then
+								pac.Message("Wearing latest outfit...")
+								pace.LoadParts(latest_outfit, true)
+								pace.WearParts()
+							end
+						end,
+
+						"cancel", function() pac.Message("Not loading autoload or backups...")  end
+					)
+					pnl.Think = function() if not pnl:HasFocus() or (input.IsMouseDown(MOUSE_LEFT) and not (pnl:IsHovered() or pnl:IsChildHovered())) then pnl:Remove() end end
+				else
+					local pnl = Derma_Query("Do you want to load your autoload outfit?", "PAC3 autoload (pac_prompt_for_autoload)",
+						"load pac3/autoload.txt : " .. string.NiceSize(file.Size("pac3/autoload.txt", "DATA")), function()
+							pac.Message("Wearing autoload...")
+							pace.LoadParts("autoload")
+							pace.WearParts()
+						end,
+
+						"cancel", function() pac.Message("Not loading autoload or backups...")  end
+					)
+					pnl.Think = function() if not pnl:HasFocus() or (input.IsMouseDown(MOUSE_LEFT) and not (pnl:IsHovered() or pnl:IsChildHovered())) then pnl:Remove() end end
+				end
+			end
 		end
 
-		pac.RemoveHook("Think", "pac_request_outfits")
+		pac.RemoveHook("Think", "request_outfits")
 		pac.Message("Requesting outfits in 8 seconds...")
 
 		timer.Simple(8, function()
@@ -273,14 +370,14 @@ do
 	end
 
 	local function Initialize()
-		pac.RemoveHook("KeyRelease", "pac_request_outfits")
+		pac.RemoveHook("KeyRelease", "request_outfits")
 
 		if not pac.LocalPlayer:IsValid() then
 			return
 		end
 
 		if not pac.IsEnabled() then
-			pac.RemoveHook("Think", "pac_request_outfits")
+			pac.RemoveHook("Think", "request_outfits")
 			pace.NeverLoaded = true
 			return
 		end
@@ -288,7 +385,7 @@ do
 		LoadUpDefault()
 	end
 
-	hook.Add("pac_Enable", "pac_LoadUpDefault", function()
+	pac.AddHook("pac_Enable", "LoadUpDefault", function()
 		if not pace.NeverLoaded then return end
 		pace.NeverLoaded = nil
 		LoadUpDefault()
@@ -296,22 +393,20 @@ do
 
 	local frames = 0
 
-	pac.AddHook("Think", "pac_request_outfits", function()
+	pac.AddHook("Think", "request_outfits", function()
 		if RealFrameTime() > 0.2 then -- lag?
 			return
 		end
 
 		frames = frames + 1
 
-		if frames > 400 then
-			if not xpcall(Initialize, ErrorNoHalt) then
-				pac.RemoveHook("Think", "pac_request_outfits")
-				pace.NeverLoaded = true
-			end
+		if frames > 400 and not xpcall(Initialize, ErrorNoHalt) then
+			pac.RemoveHook("Think", "request_outfits")
+			pace.NeverLoaded = true
 		end
 	end)
 
-	pac.AddHook("KeyRelease", "pac_request_outfits", function()
+	pac.AddHook("KeyRelease", "request_outfits", function()
 		local me = pac.LocalPlayer
 
 		if me:IsValid() and me:GetVelocity():Length() > 50 then
