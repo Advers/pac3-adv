@@ -1,8 +1,4 @@
 local movementConvar = CreateConVar("pac_free_movement", -1, CLIENT and {FCVAR_REPLICATED} or {FCVAR_ARCHIVE, FCVAR_REPLICATED}, "allow players to modify movement. -1 apply only allow when noclip is allowed, 1 allow for all gamemodes, 0 to disable")
-local allowMass = CreateConVar("pac_player_movement_allow_mass", 1, CLIENT and {FCVAR_REPLICATED} or {FCVAR_ARCHIVE, FCVAR_REPLICATED}, "enables changing player mass in player movement. 1 to enable, 0 to disable", 0, 1)
-local massUpperLimit = CreateConVar("pac_player_movement_max_mass", 50000, CLIENT and {FCVAR_REPLICATED} or {FCVAR_ARCHIVE, FCVAR_REPLICATED}, "restricts the maximum mass that players can use with player movement", 85, 50000)
-local massLowerLimit = CreateConVar("pac_player_movement_min_mass", 50000, CLIENT and {FCVAR_REPLICATED} or {FCVAR_ARCHIVE, FCVAR_REPLICATED}, "restricts the minimum mass that players can use with player movement", 0, 85)
-local massDamageScale = CreateConVar("pac_player_movement_physics_damage_scaling", 1, CLIENT and {FCVAR_REPLICATED} or {FCVAR_ARCHIVE, FCVAR_REPLICATED}, "restricts the damage scaling applied to players by modified mass values. 1 to enable, 0 to disable", 0, 1)
 
 local default = {
 	JumpHeight = 200,
@@ -10,7 +6,6 @@ local default = {
 	GroundFriction = 0.12,
 	AirFriction = 0.01,
 	Gravity = Vector(0,0,-600),
-	Mass = 85,
 	Noclip = false,
 	MaxGroundSpeed = 750,
 	MaxAirSpeed = 1,
@@ -40,7 +35,6 @@ if SERVER then
 		local str = net.ReadString()
 		if str == "disable" then
 			ply.pac_movement = nil
-			ply:GetPhysicsObject():SetMass(default.Mass)
 		else
 			if default[str] ~= nil then
 				local val = net.ReadType()
@@ -151,24 +145,6 @@ pac.AddHook("Move", "custom_movement", function(ply, mv)
 
 	ply:SetJumpPower(self.JumpHeight)
 
-	if SERVER then
-		if allowMass:GetInt() == 1 then
-			ply:GetPhysicsObject():SetMass(math.Clamp(self.Mass, massLowerLimit:GetFloat(), massUpperLimit:GetFloat()))
-		end
-	end
-	
-	if (movementConvar:GetInt() == 1 and massDamageScale:GetInt() == 1 or (movementConvar:GetInt() == -1 and hook.Run("PlayerNoClip", ply, true) == true)) and massDamageScale:GetInt() == 1 then
-		scale_mass = 85/math.Clamp(self.Mass, massLowerLimit:GetFloat(), massUpperLimit:GetFloat())
-	else
-		scale_mass = 1
-	end
-	
-	pac.AddHook("EntityTakeDamage", "PAC3MassDamageScale", function(target, dmginfo)
-		if (target:IsPlayer() and dmginfo:IsDamageType(DMG_CRUSH or DMG_VEHICLE)) then
-				dmginfo:ScaleDamage(scale_mass)
-		end
-	end)
-
 	if self.Noclip then
 		ply:SetMoveType(MOVETYPE_NONE)
 	else
@@ -197,7 +173,7 @@ pac.AddHook("Move", "custom_movement", function(ply, mv)
 		speed = self.DuckSpeed
 	end
 
-  --speed = speed * FrameTime()
+--	speed = speed * FrameTime()
 
 	local ang = mv:GetAngles()
 	local vel = Vector()
